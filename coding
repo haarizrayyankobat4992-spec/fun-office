@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Slippery Smooth - The Office Escape</title>
+    <style>
+        body { margin: 0; padding: 0; background: #222; font-family: sans-serif; overflow: hidden; text-align: center; color: white; touch-action: none; }
+        canvas { background: #eef2f3; display: block; margin: 0 auto; box-shadow: 0 0 20px rgba(0,0,0,0.5); max-width: 100%; max-height: 100vh; }
+        #ui { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); pointer-events: none; width: 90%; display: flex; justify-content: space-between; font-size: 18px; font-weight: bold; color: #333; text-shadow: 1px 1px 0 #fff; }
+        #joke-box { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); pointer-events: none; background: rgba(0,0,0,0.8); padding: 10px 20px; border-radius: 20px; font-size: 16px; display: none; max-width: 80%; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <div id="level-display">Level: 1 (The Normal Intern)</div>
+        <div id="fail-display">Fails: 0</div>
+    </div>
+    <div id="joke-box"></div>
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+const jokeBox = document.getElementById("joke-box");
+
+// Handle Responsive Screen Sizing
+function resize() {
+    canvas.width = window.innerWidth < 800 ? window.innerWidth : 800;
+    canvas.height = window.innerHeight < 600 ? window.innerHeight : 600;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// Game State
+let level = 1;
+let fails = 0;
+let gameOver = false;
+
+// Player Settings (An intern sliding on a rolling office chair)
+let player = {
+    x: 50, y: 0, r: 20,
+    vx: 0, vy: 0,
+    speed: 0.6, friction: 0.98, gravity: 0.4,
+    isGrounded: false, rotation: 0, rotSpeed: 0
+};
+
+// Controls
+let keys = {};
+let touchX = null;
+
+// Level Configs (Harder but funnier)
+const levelData = {
+    1: { name: "The Normal Intern", joke: "Just roll to the exit. Simple, right?", speedMod: 1, gravMod: 1, invert: false, bounce: false },
+    2: { name: "The Floor is Butter", joke: "Who spilled oil here?! Friction has left the building.", speedMod: 1.5, frictionMod: 0.999, invert: false, bounce: false },
+    3: { name: "Sneeze Attack", joke: "Sneezing propels you backwards. Control inverted!", speedMod: 1.2, frictionMod: 0.98, invert: true, bounce: false },
+    4: { name: "Flappy Intern", joke: "Gravity is broken! Tapping makes you fart upward.", speedMod: 1, gravMod: -0.1, invert: false, bounce: true },
+    5: { name: "The CEO's Wrath", joke: "Maximum chaos. Everything is bouncing, sliding, and backward!", speedMod: 2, frictionMod: 0.999, invert: true, bounce: true }
+};
+
+let platforms = [];
+let goal = { x: 0, y: 0, w: 40, h: 60 };
+
+function initLevel() {
+    player.x = 60;
+    player.y = 100;
+    player.vx = 0;
+    player.vy = 0;
+    player.rotation = 0;
+    player.rotSpeed = 0;
+    
+    document.getElementById("level-display").innerText = `Level: ${level} (${levelData[level].name})`;
+    showJoke(levelData[level].joke);
+
+    // Build unique physical obstacles based on the level map
+    platforms = [
+        { x: 0, y: canvas.height - 40, w: canvas.width, h: 40 }, // Ground
+    ];
+
+    if (level === 1) {
+        platforms.push({ x: 300, y: canvas.height - 120, w: 150, h: 20 });
+    } else if (level === 2) {
+        platforms.push({ x: 200, y: canvas.height - 100, w: 120, h: 20 });
+        platforms.push({ x: 450, y: canvas.height - 180, w: 120, h: 20 });
+    } else if (level === 3) {
+        platforms.push({ x: 200, y: canvas.height - 120, w: 400, h: 20 }); // High wall trap
+    } else if (level === 4) {
+        platforms = [
+            { x: 0, y: 0, w: canvas.width, h: 20 },
+            { x: 0, y: canvas.height - 20, w: canvas.width, h: 20 },
+            { x: 250, y: 150, w: 80, h: 300 }, // Pillars to flap through
+            { x: 500, y: 0, w: 80, h: 250 }
+        ];
+    } else if (level === 5) {
+        // Absolute Chaos placement
+        platforms.push({ x: 150, y: canvas.height - 150, w: 100, h: 20 });
+        platforms.push({ x: 350, y: canvas.height - 250, w: 100, h: 20 });
+        platforms.push({ x: 550, y: canvas.height - 350, w: 100, h: 20 });
+    }
+
+    // Set Goal at the end of the map
+    goal.x = canvas.width - 80;
+    goal.y = level === 4 ? 50 : canvas.height - 100;
+}
+
+function showJoke(text) {
+    jokeBox.innerText = text;
+    jokeBox.style.display = "block";
+    setTimeout(() => { jokeBox.style.display = "none"; }, 4000);
+}
+
+// PC Inputs
+window.addEventListener("keydown", (e) => keys[e.code] = true);
+window.addEventListener("keyup", (e) => keys[e.code] = false);
+
+// Mobile Inputs
+window.addEventListener("touchstart", (e) => { touchX = e.touches[0].clientX; });
+window.addEventListener("touchmove", (e) => { touchX = e.touches[0].clientX; });
+window.addEventListener("touchend", () => { touchX = null; });
+
+function update() {
+    let config = levelData[level];
+    let currentFriction = config.frictionMod || player.friction;
+    let currentGravity = config.gravMod !== undefined ? config.gravMod : player.gravity;
+
+    // Movement Inputs Logic
+    let moveDir = 0;
+    if (keys["ArrowRight"] || keys["KeyD"]) moveDir = 1;
+    if (keys["ArrowLeft"] || keys["KeyA"]) moveDir = -1;
+    if (touchX !== null) moveDir = touchX < window.innerWidth / 2 ? -1 : 1;
+
+    if (config.invert) moveDir *= -1; // Sneeze mechanics inversion
+
+    // Apply acceleration
+    player.vx += moveDir * player.speed * config.speedMod;
+    
+    // Jump mechanics / Fart triggers
+    if ((keys["Space"] || keys["ArrowUp"] || keys["KeyW"] || touchX !== null) && config.bounce) {
+        player.vy = -5; // continuous lifting for flappy mechanics
+        player.rotSpeed += 0.05;
+    } else if ((keys["Space"] || keys["ArrowUp"] || keys["KeyW"]) && player.isGrounded) {
+        player.vy = -10;
+        player.isGrounded = false;
+    }
+
+    // Physics Engine
+    player.vy += currentGravity;
+    player.vx *= currentFriction;
+    player.vy *= currentFriction;
+
+    player.x += player.vx;
+    player.y += player.vy;
+    
+    // Spin the character based on speed for comical effect
+    player.rotation += player.vx * 0.05 + player.rotSpeed;
+    player.rotSpeed *= 0.95;
+
+    // Platform Collisions
+    player.isGrounded = false;
+    platforms.forEach(p => {
+        if (player.x + player.r > p.x && player.x - player.r < p.x + p.w &&
+            player.y + player.r > p.y && player.y - player.r < p.y + p.h) {
+            
+            // Resolve collision from top
+            if (player.vy > 0 && player.y < p.y + 10) {
+                player.y = p.y - player.r;
+                player.vy = config.bounce ? -player.vy * 0.8 : 0; // bouncy level setting
+                player.isGrounded = true;
+            } else {
+                // Side wall bonks
+                player.vx = -player.vx * 0.6;
+            }
+        }
+    });
+
+    // Boundary Deaths
+    if (player.y > canvas.height || player.x < 0 || player.x > canvas.width) {
+        fails++;
+        document.getElementById("fail-display").innerText = `Fails: ${fails}`;
+        initLevel();
+    }
+
+    // Goal Check
+    if (player.x + player.r > goal.x && player.x - player.r < goal.x + goal.w &&
+        player.y + player.r > goal.y && player.y - player.r < goal.y + goal.h) {
+        if (level < Object.keys(levelData).length) {
+            level++;
+            initLevel();
+        } else {
+            gameOver = true;
+            showJoke("🎉 Victory! You escaped the office with your sanity barely intact!");
+        }
+    }
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Draw Platforms
+    ctx.fillStyle = "#7f8c8d";
+    platforms.forEach(p => ctx.fillRect(p.x, p.y, p.w, p.h));
+
+    // Draw Goal (The Break Room Door)
+    ctx.fillStyle = "#2ecc71";
+    ctx.fillRect(goal.x, goal.y, goal.w, goal.h);
+    ctx.fillStyle = "#fff";
+    ctx.font = "12px sans-serif";
+    ctx.fillText("EXIT", goal.x + 5, goal.y + 30);
+
+    // Draw Rolling Intern Player (Comical Ragdoll Circle)
+    ctx.save();
+    ctx.translate(player.x, player.y);
+    ctx.rotate(player.rotation);
+    
+    // The Chair Base
+    ctx.fillStyle = "#111";
+    ctx.fillRect(-15, 12, 30, 6);
+    
+    // The Goofy Face Expression
+    ctx.fillStyle = "#f1c40f";
+    ctx.beginPath();
+    ctx.arc(0, 0, player.r, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Worried wide eyes
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(-7, -4, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(7, -4, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#000";
+    ctx.beginPath(); ctx.arc(-7, -4, 2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(7, -4, 2, 0, Math.PI * 2); ctx.fill();
+    
+    // Panicked open mouth
+    ctx.strokeStyle = "#000";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 6, 5, 0, Math.PI, true);
+    ctx.stroke();
+
+    ctx.restore();
+}
+
+function loop() {
+    if (!gameOver) {
+        update();
+        draw();
+        requestAnimationFrame(loop);
+    }
+}
+
+initLevel();
+loop();
+</script>
+</body>
+</html>
